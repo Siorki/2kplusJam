@@ -1,0 +1,281 @@
+<canvas id=a></canvas>
+<div id="debug"></div>
+<script>
+
+frame=0; t0 = new Date();	// FPS measure only
+var debug=document.getElementById('debug');
+
+// start of submission //
+
+// Racing game based on voxel engine from Comanche
+
+/*
+ * global variables
+ *
+ * h : current hour, in radians (2.pi = 24h)
+ * i : helicopter altitude (Y coordinate)
+ * l : helicopter X coordinate
+ * m : helicopter Z coordinate
+ * p : terrain heightmap
+ * v : array of helicopter controls
+ * C : helicopter yaw
+ * q : angular speed (left-right)
+ * s : helicopter speed
+ */
+
+a = document.getElementById('a');
+c = a.getContext('2d');
+a.width=1024; a.height=512;
+c.font='30px arial';
+
+// creation of sound fx. A, B and C are no longer needed after the init and can be reused
+A = new AudioContext();
+B = A.createBuffer(1,2200,22050);
+C = B.getChannelData(0);
+for (i=0; i<2200; ++i) {
+    C[i]=(i&50)/50-(i%80>40?1:0);
+}
+soundSource=A.createBufferSource();
+soundSource.buffer=B;
+soundSource.loop=true;
+soundSource.connect(A.destination);
+soundSource.start();
+soundSource.playbackRate.value = .01;
+
+									// resize canvas and set altitude
+I=c.getImageData(0,0,1024,512); D=I.data;
+level=0;raceStatus=3;v=[];
+
+
+setInterval( t=> {
+
+    if (raceStatus > 1) {
+        // Landscape generation, two steps
+        if (raceStatus > 2) {
+            // step 1 : fast, raw landscape, used for level splash screen
+            clouds=p=[];color=[];	
+            for (x=y=0;1024>y;y+=!(x=x+1&1023))	{   						// 2-in-1 loop on x and y
+                color.push(0);
+                p.push(0);		                                            // heightmap for splash screen
+            }
+            for (t=b=0;++b-2e6;t=9*t+2+9*Math.cos(t)&-1) {						// 2.000.000 steps of pseudo-random walk
+                x+=[0,1,0,-1][t&3];												// not using actual random() to always generate the same heightmap
+                y+=[0,1,0,-1][3-t&3];
+                for (l=-4;++l-5;) for(m=-4;++m-5;)						// 11 ~ -1.57 radian : start at dawn, facing the sunrise
+                    p[1024*(y+m&1023)+(x+l&1023)]+=.01;							// raise the land around : flat convolution filter
+            }
+            i=512;
+        } else {
+            // step 2 : detailed landscape and race track
+            p=[];color=[];	
+            for (x=y=0;1024>y;y+=!(x=x+1&1023))	{   						// 2-in-1 loop on x and y
+                color.push(0);
+                p.push(Math.min(1,52-55*Math.cos(x/160-Math.sin(y/160)))-1);		// initialize the heightmap with a sine-shaped river over a flat land
+            }
+            for (t=b=0;++b-5e6;t=9*t+2+9*Math.cos(t)&-1) {						// 2.000.000 steps of pseudo-random walk
+                x+=[0,1,0,-1][t&3];												// not using actual random() to always generate the same heightmap
+                y+=[0,1,0,-1][3-t&3];
+                v[t&3]=0;														// use the loop to initialize the controls as well
+                for (l=-4;++l-5;) for(m=-4;++m-5;)						// 11 ~ -1.57 radian : start at dawn, facing the sunrise
+                    p[1024*(y+m&1023)+(x+l&1023)]+=.01;							// raise the land around : flat convolution filter
+            }
+            l=0; m=0;															// start at (0, 0) - no need to begin at the top of a hill here
+
+            // Draw the road
+            // Indexed colors
+            //  0 : grass or water
+            //  1 : asphalt
+            //  2 : red paint on borders
+            //  3 : white paint on borders
+            //  4 : end-of-race checkerboard
+
+            angle=0; refAlt = 0; totalLength=4000, sectionLength=50, deltaAngle=0;
+            while (--totalLength) {
+                x = 0; y=0; refAlt = .95*refAlt + .05*p[1024*(y+m&1023)+(x+l&1023)];
+                /*
+                x = -12*Math.sin(angle);
+                y = 12*Math.cos(angle);
+                leftAlt = p[1024*(y+m&1023)+(x+l&1023)];
+                for (dj=-12 ; dj<1; ++dj) {
+                    x = dj*Math.sin(angle);
+                    y = -dj*Math.cos(angle);
+                    alpha = Math.max((Math.abs(dj)-8)/4,0);
+                    p[1024*(y+m&1023)+(x+l&1023)] = leftAlt*alpha + (1-alpha)*refAlt;
+                }
+                x = 12*Math.sin(angle);
+                y = -12*Math.cos(angle);
+                rightAlt = p[1024*(y+m&1023)+(x+l&1023)];
+                for (dj=0 ; dj<13; ++dj) {
+                    x = dj*Math.sin(angle);
+                    y = -dj*Math.cos(angle);
+                    alpha = Math.max((Math.abs(dj)-8)/4,0);
+                    p[1024*(y+m&1023)+(x+l&1023)] = rightAlt*alpha + (1-alpha)*refAlt;
+                }
+                */
+                for (dj=-8 ; dj<9; ++dj) {
+                    x = dj*Math.sin(angle);
+                    y = -dj*Math.cos(angle);
+                    p[1024*(y+m&1023)+(x+l&1023)] = refAlt;
+                    color[1024*(y+m&1023)+(x+l&1023)] = (dj==-8||dj==8?(totalLength&16?2:3):(totalLength<128?4:1));
+                }
+                l += .25*Math.cos(angle);
+                m += .25*Math.sin(angle);
+                --sectionLength||(deltaAngle=Math.sin(l+level)/100,sectionLength=20+(m&63));
+                angle+=deltaAngle;
+            }
+        }
+
+        l=10; m=0; s=q=C=0; // start at (10,0) to avoid border effects on pitch
+        pitch=0;timer=-100;
+        --raceStatus; // 3 to 2 first, then 2 to 1 to start race
+        cloudCover = 5+4*Math.sin(level+4*Math.cos(level));  // cloud cover : 0 = overcast, 10 = clear sky
+        h = .2-1.5*Math.cos(level); // -1.57 = sunrise , 0 = noon, 1.57 = sunset, 3.14 = midnight
+
+    } else {
+        // animate player car
+        accel = raceStatus ? v[0]-v[2]:.02;
+        x=y=0;
+        s=timer<0?0:s-accel/2-(color[1024*(y+m&1023)+(x+l&1023)]?.01:.06)*s*Math.abs(s);
+        soundSource.playbackRate.value = timer<20 ? ((timer+100)%50<20 ? (timer<0 ? 1.6 : 3) : .01) : Math.max(.1, Math.abs(s));
+
+        oldAlt = Math.max(0,p[1024*(y+m&1023)+(x+l&1023)]);
+        if (4==color[1024*(y+m&1023)+(x+l&1023)]) {
+            raceStatus=0;
+        }
+        l+=s*Math.cos(C=Math.atan2(Math.sin(C),Math.cos(C))+q);			// restrict yaw in [-pi, pi] as its raw value is used to position the sun
+        m+=s*Math.sin(C);
+        q=q/2+Math.min(1, Math.max(-1, s*4))*(v[1]-v[3]);               // steering bounded by wheel angle and by speed (constant angle at high speed)
+        i=.9*i+10+5*Math.max(0,p[1024*(y+m&1023)+(x+l&1023)]);          // altitude autopilot, always fly above the ground
+        x=5*Math.cos(C); y=5*Math.sin(C);
+        newAlt = Math.max(0,p[1024*(y+m&1023)+(x+l&1023)]);
+        pitch = .9*pitch+.05*(oldAlt-newAlt);
+        
+        timer+=raceStatus; // 1 while racing, 0 when done;
+    }
+	
+	/* Render to buffer, then to screen */
+	
+	d=k = 432*C-672*Math.sin(h+=1/4096); 							// sun X screen coordinate, needs yaw (C) in [-pi, pi]
+	u = 256-200*pitch+q*3*d-384*Math.cos(h);						// sun Y screen coordinate, even below the horizon
+
+
+    // draw the landscape
+	for (d=-512; 512>d; d+=4) {										// step size adjusted to get a reasonable framerate
+        // render the ground first, y-buffer front-to back
+		for (f=512, a=4*(1024*f-512+d), e=0; ++e-300; ) {
+		
+			x=.5*e*Math.cos(C)+e*Math.sin(C)*d/800;					// (x,y) matching world coordinate 
+			y=-d/800*e*Math.cos(C)+e*Math.sin(C)/2;
+			b=Math.max(0,p[1024*(y+m&1023)+(x+l&1023)]);				// altitude at (x,y)	
+			
+            w=Math.max(0,256-200*pitch+q*3*d-384*2*b/e+15*i/e);		// pixel height of the hill 
+			if(f>w) {												// y-buffer : only plot landscape visible behind the pixels already drawn
+				
+                oneColor = color[1024*(y+m&1023)+(x+l&1023)];           // ground type at x,y
+                if (4==oneColor) {                                   // 4 is end of race (checkered)
+                    oneColor=1+((x+l&2)^(y+m&2));
+                }	
+                
+                ++y;												// shadow computed from altitude difference along Y and sun direction
+				dy = b-Math.max(0,p[1024*(y+m&1023)+(x+l&1023)]);
+                --y;++x;
+                dx = b-Math.max(0,p[1024*(y+m&1023)+(x+l&1023)]);
+                dn=Math.sqrt(1-dx*dx-dy*dy);
+                
+               
+                y = Math.max(0,Math.min(1, .2+Math.cos(h))) * Math.max(0,Math.min(1,(12-cloudCover)/16+cloudCover/5*dy*Math.sin(h)));
+                y+= Math.cos(h)<.2 ? Math.max(y, Math.min(.6, Math.max(0, 80+20*e-Math.abs(d))/(4*(x*x+y*y)+20))) : 0;
+                    
+                t=e/300;
+                 
+                // base color is stored as (x) in range [0..1] for RGB components
+                //  - 0 = raw ground, depending on level (grass, desert, ...)
+                //        in some levels color changes with altitude (b)
+                //  - 1 = unpainted asphalt
+                //  - 2 = asphalt border, painted red
+                //  - 3 = asphalt border, painted white
+                // it is then blended with horizon color depending on distance (t)
+                // and lit with both diffuse light (cos h) and directional sunlight (y) 
+                x = [[b/5   , 3, 1, (b>5?4:1.5)][level&3], 2, 3, 3][oneColor]/4;
+                r=y*255 * (Math.max(0,Math.min(1,.5+2*Math.cos(h)))*t+(1-t)*x);
+                x = [[b/15+3, 2, 2, (b>5?3:1)][level&3], 2, 0, 3][oneColor]/4;
+                g=y*255 * (Math.max(0,Math.cos(h-.2))*t+(1-t)*x);
+                x = [[b/5||4, 1, b?1:3, (b>5?4:1)][level&3], 2, 0, 3][oneColor]/4;
+                b=y*255 * ((.2+.8*Math.max(0,Math.min(1,3*Math.cos(h+.5))))*t+(1-t)*x);
+                
+				for (++f;--f>w;a-=4112) {
+					D[a++]=r&255;D[a++]=g&255;D[a++]=b&255;D[a++]=255;
+					D[a++]=r&255;D[a++]=g&255;D[a++]=b&255;D[a++]=255;
+					D[a++]=r&255;D[a++]=g&255;D[a++]=b&255;D[a++]=255;
+					D[a++]=r&255;D[a++]=g&255;D[a++]=b&255;D[a++]=255;
+				}
+			}			
+		}
+		
+		// then complete the y-buffer (bottom to top) with the sky
+		for (++f;--f;a-=4112) {
+			r=55;
+			g=118+112*Math.cos(h);	
+			b=55+200*Math.max(0,Math.min(1,4*Math.cos(h)));
+			
+			e=Math.sqrt((d-k)*(d-k)+(f-u)*(f-u));
+			//if (256>e) {
+				t=Math.max(0,Math.min(1,(e-35)/-10));
+				x = 255*Math.max(0,Math.cos(h));
+				y = x*t+(1-t)*(55+200*Math.max(0,Math.cos(h)));
+				x = (99+155*Math.sqrt(Math.max(0,Math.cos(h))))*t+(1-t)*x;
+			
+				t=Math.max(0,Math.min(1,(e-35)/256));
+				r=r*t+(1-t)*255;
+				g=g*t+(1-t)*x;
+				b=b*t+(1-t)*y;
+			//}
+			
+			e=40*512/(256-200*pitch+q*3*d-f);
+			x=9*h+.5*e*Math.cos(C)+e*Math.sin(C)*d/800;					// (x,y) matching world coordinate 
+			y=-d/800*e*Math.cos(C)+e*Math.sin(C)/2;
+		
+			// blend with horizon/clouds (they are the same color)
+			t=Math.min(1,Math.max(0,2*clouds[1024*(y+m&1023)+(x+l&1023)]-cloudCover, -t*(-200*pitch+q*3*d-f)/256));
+			r=255*Math.max(0,Math.min(1,.5+2*Math.cos(h)))*t+(1-t)*r;
+			g=255*Math.max(0,Math.cos(h-.2))*t+(1-t)*g;
+			b=(55+200*Math.max(0,Math.min(1,3*Math.cos(h+.5))))*t+(1-t)*b;
+			
+			
+			D[a++]=r&255;D[a++]=g&255;D[a++]=b&255;D[a++]=255;
+			D[a++]=r&255;D[a++]=g&255;D[a++]=b&255;D[a++]=255;
+			D[a++]=r&255;D[a++]=g&255;D[a++]=b&255;D[a++]=255;
+			D[a++]=r&255;D[a++]=g&255;D[a++]=b&255;D[a++]=255;
+		}
+	}
+		
+	c.putImageData(I,0,0);
+	
+	seconds = Math.floor(Math.max(0, timer)/50);
+	c.textAlign='right';
+	c.fillStyle=(timer<2000?'#000':'#f00');
+	c.fillText(raceStatus>1?'0:40 to qualify':Math.floor(seconds/60)+':'+(seconds%60<10?0:'')+(seconds%60), 1000, 40);
+	c.textAlign='left';
+	c.fillText(raceStatus>1?'Track '+(1+level):(timer<0?'Get ready':(raceStatus?255*s|0:(timer>2000?'Try again':'Well done !'))), 20, 40);
+	
+	// when the player completes the race, wait a bit 
+	// (use the decreasing speed as a timer)
+	// then move on to the next race
+	if (!raceStatus && s<.01) {
+        raceStatus = 3;
+        timer>2000||++level; // only progress to the next race after completing the current one in less than 40s
+        //soundSource.pause();
+	}
+	frame++;
+	var frameRate= 1000*frame / (new Date() - t0);
+	debug.innerHTML="frameRate="+frameRate+", speed="+s+", x="+l+", y="+m+", angle="+C+", rotation = "+q+" h = "+h;
+
+	
+}, 20);																// target 25 FPS
+
+onkeydown = t=>v[t.keyCode&3]=.01;
+onkeyup = t=>v[t.keyCode&3]=0
+
+
+// end of submission //
+</script>
